@@ -4,17 +4,15 @@
  * password strength indicators, and comprehensive form validation.
  * 
  * @module components/auth/AuthModal
- * @version 1.0.0
+ * @version 1.2.0
  */
 
 import React, { useState, useRef, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { useToast } from '@/hooks/use-toast';
-import { supabase } from '@/lib/supabase';
-import { useSecureAuth } from '@/hooks/useSecureAuth';
 import {
   validateInput,
-  validateForm,
   sanitizeInput,
   checkPasswordStrength,
   type PasswordStrength,
@@ -36,7 +34,6 @@ import {
   Droplets,
   CheckCircle,
   Camera,
-  AlertCircle,
   Shield,
 } from 'lucide-react';
 
@@ -44,14 +41,6 @@ import {
 // TYPE DEFINITIONS
 // ============================================================================
 
-/**
- * Props for the AuthModal component.
- * @interface AuthModalProps
- * @property {boolean} isOpen - Whether the modal is currently visible
- * @property {() => void} onClose - Callback function when modal is closed
- * @property {'login' | 'signup'} [initialMode='login'] - Initial view to display
- * @property {'client' | 'professional'} [initialRole] - Pre-selected user role
- */
 interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -59,20 +48,14 @@ interface AuthModalProps {
   initialRole?: 'client' | 'professional';
 }
 
-/**
- * Available views within the authentication modal.
- * @typedef {'select-role' | 'login' | 'signup' | 'forgot-password' | 'check-email'} AuthView
- */
 type AuthView = 'select-role' | 'login' | 'signup' | 'forgot-password' | 'check-email';
 
 // ============================================================================
 // CONSTANTS
 // ============================================================================
 
-/** Available skin types for client profiles */
 const SKIN_TYPES = ['Normal', 'Dry', 'Oily', 'Combination', 'Sensitive'];
 
-/** Available skin concerns for client profiles */
 const SKIN_CONCERNS = [
   'Acne', 'Hyperpigmentation', 'Dark spots', 'Fine lines', 'Wrinkles',
   'Dehydration', 'Redness', 'Texture', 'Uneven tone', 'Dullness'
@@ -82,23 +65,12 @@ const SKIN_CONCERNS = [
 // HELPER COMPONENTS
 // ============================================================================
 
-/**
- * Visual indicator for password strength.
- * Displays a progress bar and label based on password analysis.
- * 
- * @component
- * @param {Object} props - Component props
- * @param {PasswordStrength} props.strength - Password strength analysis result
- * @returns {JSX.Element} Password strength indicator
- */
 const PasswordStrengthIndicator: React.FC<{ strength: PasswordStrength }> = ({ strength }) => {
-  // Color mapping for each strength level (0-4)
   const colors = ['bg-red-500', 'bg-orange-500', 'bg-yellow-500', 'bg-lime-500', 'bg-green-500'];
   const color = colors[strength.score];
 
   return (
     <div className="mt-2">
-      {/* Strength bar segments */}
       <div className="flex gap-1 mb-1">
         {[0, 1, 2, 3, 4].map((index) => (
           <div
@@ -109,7 +81,6 @@ const PasswordStrengthIndicator: React.FC<{ strength: PasswordStrength }> = ({ s
           />
         ))}
       </div>
-      {/* Label and suggestion */}
       <div className="flex items-center justify-between">
         <span className={`text-xs font-medium ${
           strength.score <= 1 ? 'text-red-500' :
@@ -130,42 +101,10 @@ const PasswordStrengthIndicator: React.FC<{ strength: PasswordStrength }> = ({ s
 // MAIN COMPONENT
 // ============================================================================
 
-/**
- * Authentication modal component providing login, signup, and password reset functionality.
- * 
- * Features:
- * - Role selection (client/professional)
- * - Secure login with rate limiting
- * - Signup with profile creation
- * - Password strength indicator
- * - Avatar upload support
- * - Forgot password flow
- * - Input validation and sanitization
- * - CSRF protection
- * 
- * @component
- * @param {AuthModalProps} props - Component props
- * @returns {JSX.Element | null} Modal component or null if not open
- * 
- * @example
- * // Basic usage
- * <AuthModal
- *   isOpen={showAuth}
- *   onClose={() => setShowAuth(false)}
- * />
- * 
- * @example
- * // Pre-select role and mode
- * <AuthModal
- *   isOpen={showAuth}
- *   onClose={() => setShowAuth(false)}
- *   initialMode="signup"
- */
 const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'login', initialRole }) => {
-
   const { signIn, signUp, resetPassword } = useAuth();
-  const { secureSignIn, secureSignUp, getRemainingAttempts, fetchCSRFToken } = useSecureAuth();
   const { toast } = useToast();
+  const navigate = useNavigate();
   const avatarInputRef = useRef<HTMLInputElement>(null);
 
   const [view, setView] = useState<AuthView>(initialRole ? initialMode : 'select-role');
@@ -188,21 +127,10 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
   // Avatar upload state
   const [avatarFile, setAvatarFile] = useState<File | null>(null);
   const [avatarPreview, setAvatarPreview] = useState<string>('');
-  const [uploadingAvatar, setUploadingAvatar] = useState(false);
 
   // Validation and security state
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [passwordStrength, setPasswordStrength] = useState<PasswordStrength | null>(null);
-  const [remainingAttempts, setRemainingAttempts] = useState(5);
-  const [resendingEmail, setResendingEmail] = useState(false);
-
-  // Fetch CSRF token on mount
-  useEffect(() => {
-    if (isOpen) {
-      fetchCSRFToken();
-      setRemainingAttempts(getRemainingAttempts());
-    }
-  }, [isOpen, fetchCSRFToken, getRemainingAttempts]);
 
   // Update password strength when password changes
   useEffect(() => {
@@ -213,17 +141,15 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
     }
   }, [password]);
 
-  // Client-side validation with security library
+  // Client-side validation
   const validateFormData = (isSignup: boolean): boolean => {
     const newErrors: Record<string, string> = {};
 
-    // Validate email
     const emailValidation = validateInput(email, 'email');
     if (!emailValidation.valid) {
       newErrors.email = emailValidation.error!;
     }
 
-    // Validate password
     if (!password) {
       newErrors.password = 'Password is required';
     } else if (isSignup && password.length < 8) {
@@ -231,31 +157,26 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
     }
 
     if (isSignup) {
-      // Validate name
       if (!fullName || fullName.trim().length < 2) {
         newErrors.fullName = 'Full name is required (at least 2 characters)';
       } else if (fullName.length > 100) {
         newErrors.fullName = 'Name must be less than 100 characters';
       }
 
-      // Validate password confirmation
       if (password !== confirmPassword) {
         newErrors.confirmPassword = 'Passwords do not match';
       }
 
-      // Validate password strength for signup
       if (passwordStrength && passwordStrength.score < 2) {
         newErrors.password = 'Please choose a stronger password';
       }
 
-      // Professional-specific validation
       if (selectedRole === 'professional') {
         if (!businessName || businessName.trim().length < 2) {
           newErrors.businessName = 'Business name is required';
         }
       }
 
-      // Validate phone if provided
       if (phone) {
         const phoneValidation = validateInput(phone, 'phone');
         if (!phoneValidation.valid) {
@@ -268,30 +189,24 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
     return Object.keys(newErrors).length === 0;
   };
 
-  // Handle avatar file selection with validation
+  // Handle avatar file selection
   const handleAvatarSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Validate file type
     const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
     if (!allowedTypes.includes(file.type)) {
       toast({ title: 'Error', description: 'Please select a valid image file (JPG, PNG, GIF, WebP)', variant: 'destructive' });
       return;
     }
 
-    // Validate file size (max 5MB)
     if (file.size > 5 * 1024 * 1024) {
       toast({ title: 'Error', description: 'Image must be less than 5MB', variant: 'destructive' });
       return;
     }
 
-    // Validate file name (basic sanitization)
-    const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-    
     setAvatarFile(file);
     
-    // Create preview URL
     const reader = new FileReader();
     reader.onloadend = () => {
       setAvatarPreview(reader.result as string);
@@ -299,111 +214,52 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
     reader.readAsDataURL(file);
   };
 
-  // Upload avatar using edge function (bypasses RLS with service role)
-  const uploadAvatar = async (userId: string): Promise<string | null> => {
-    if (!avatarFile) return null;
-
-    setUploadingAvatar(true);
-    try {
-      // Create FormData for the edge function
-      const formData = new FormData();
-      formData.append('file', avatarFile);
-      formData.append('userId', userId);
-
-      // Get the current session for authorization
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      if (!session?.access_token) {
-        console.error('No valid session for avatar upload');
-        return null;
-      }
-
-      // Call the edge function which uses service role to bypass RLS
-      const response = await fetch(
-        'https://emqiscdnvmjjrqapccib.supabase.co/functions/v1/upload-avatar',
-        {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${session.access_token}`,
-          },
-          body: formData,
-        }
-      );
-
-      const result = await response.json();
-
-      if (!response.ok || !result.success) {
-        console.error('Avatar upload error:', result.error || 'Unknown error');
-        return null;
-      }
-
-      return result.url;
-    } catch (error) {
-      console.error('Avatar upload error:', error);
-      return null;
-    } finally {
-      setUploadingAvatar(false);
-    }
-  };
-
-
-
-
-
-
-
-
+  /**
+   * Handle login form submission.
+   * Uses the new signIn function from AuthContext that:
+   * 1. Authenticates with auth.users table
+   * 2. Fetches profile from user_profiles table
+   * 3. Returns profile with role for navigation
+   */
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!validateFormData(false)) return;
 
-    // Check rate limiting
-    const attempts = getRemainingAttempts();
-    setRemainingAttempts(attempts);
-    
-    if (attempts <= 0) {
-      toast({
-        title: 'Too Many Attempts',
-        description: 'Please wait a minute before trying again.',
-        variant: 'destructive',
-      });
-      return;
-    }
-
     setLoading(true);
     try {
-      // Sanitize inputs before sending
       const sanitizedEmail = sanitizeInput(email.toLowerCase().trim());
       
-      // Try secure auth first, fall back to standard auth
-      const secureResult = await secureSignIn(sanitizedEmail, password);
-      
-      if (secureResult.success) {
+      // Call the new signIn function from AuthContext
+      const result = await signIn(sanitizedEmail, password);
+
+      if (result.error) {
         toast({
-          title: 'Welcome back!',
-          description: 'You have successfully logged in.',
+          title: 'Login Failed',
+          description: result.error.message || 'Invalid email or password',
+          variant: 'destructive',
         });
-        onClose();
-        resetForm();
         return;
       }
 
-      // Fall back to standard Supabase auth if secure auth fails
-      const { error } = await signIn(sanitizedEmail, password);
-      if (error) {
-        setRemainingAttempts(getRemainingAttempts());
-        toast({
-          title: 'Login Failed',
-          description: error.message || 'Invalid email or password',
-          variant: 'destructive',
-        });
+      // Login successful
+      toast({
+        title: 'Welcome back!',
+        description: 'You have successfully logged in.',
+      });
+
+      // Close the modal
+      onClose();
+      resetForm();
+
+      // Navigate based on user role from profile
+      if (result.profile?.role === 'client') {
+        navigate('/client');
+      } else if (result.profile?.role === 'professional') {
+        navigate('/professional');
       } else {
-        toast({
-          title: 'Welcome back!',
-          description: 'You have successfully logged in.',
-        });
-        onClose();
-        resetForm();
+        // Fallback if no profile or role found - go to home
+        console.warn('No profile role found, navigating to home');
+        navigate('/');
       }
     } catch (error: any) {
       toast({
@@ -415,6 +271,8 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
       setLoading(false);
     }
   };
+
+
 
   const handleSignup = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -422,79 +280,45 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
 
     setLoading(true);
     try {
-      // Prepare user data - sanitization is handled by signUp function in AuthContext
-      const userData = {
+      // Call the new signUp function from AuthContext
+      const result = await signUp({
+        email: email.trim(),
+        password,
         full_name: fullName.trim(),
-        phone: phone ? phone.trim() : undefined,
+        phone: phone.trim() || undefined,
         role: selectedRole,
         skin_type: selectedRole === 'client' ? skinType : undefined,
-        concerns: selectedRole === 'client' && selectedConcerns.length > 0 
-          ? selectedConcerns 
-          : undefined,
+        concerns: selectedRole === 'client' && selectedConcerns.length > 0 ? selectedConcerns : undefined,
         business_name: selectedRole === 'professional' ? businessName.trim() : undefined,
         license_number: selectedRole === 'professional' ? licenseNumber.trim() : undefined,
-      };
+        avatarFile: avatarFile || undefined,
+      });
 
-      // Use signUp function from AuthContext which handles:
-      // - Input sanitization
-      // - Supabase auth signup
-      // - User profile creation in database
-      const { error, session, user } = await signUp(email.trim(), password, userData);
-
-      if (error) {
+      if (result.error) {
         toast({
           title: 'Signup Failed',
-          description: error.message || 'Could not create account',
+          description: result.error.message || 'Could not create account',
           variant: 'destructive',
         });
         return;
       }
-      
-      if (user) {
-        // Only upload avatar if we have a valid session (user is authenticated)
-        // This ensures the storage RLS policy allows the upload
-        if (avatarFile && session) {
-          const avatarUrl = await uploadAvatar(user.id);
-          if (avatarUrl) {
-            // Update the user profile with the avatar URL
-            const { error: updateError } = await supabase
-              .from('user_profiles')
-              .update({ avatar_url: avatarUrl })
-              .eq('id', user.id);
-            
-            if (updateError) {
-              console.error('Error updating avatar URL:', updateError);
-            }
-          }
-        }
 
-        // Check if email confirmation is required
-        // If session is null but user exists, email confirmation is required
-        if (!session) {
-          // Email confirmation required - show check-email view
-          setView('check-email');
-          toast({
-            title: 'Account Created!',
-            description: 'Please check your email to verify your account before logging in.',
-          });
-        } else {
-          // User is logged in immediately (email confirmation disabled in Supabase)
-          toast({
-            title: 'Welcome to SkinAura PRO!',
-            description: 'Your account has been created successfully.',
-          });
-          onClose();
-          resetForm();
-        }
-      } else {
-        // No user returned but no error - unusual case, show check-email view
+      if (result.requiresEmailConfirmation) {
+        // Email confirmation is required
         setView('check-email');
         toast({
           title: 'Account Created!',
           description: 'Please check your email to verify your account.',
         });
+      } else if (result.session) {
+        // User is logged in immediately
+        toast({
+          title: 'Welcome to SkinAura PRO!',
+          description: 'Your account has been created successfully.',
+        });
+        onClose();
+        resetForm();
       }
-
     } catch (error: any) {
       toast({
         title: 'Error',
@@ -505,11 +329,6 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
       setLoading(false);
     }
   };
-
-
-
-
-
 
   const handleForgotPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -598,7 +417,6 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
       <h2 className="text-2xl font-serif font-bold text-[#2D2A3E] mb-2">Welcome to SkinAura PRO</h2>
       <p className="text-gray-600 mb-8">Choose how you'd like to continue</p>
 
-      {/* Security badge */}
       <div className="flex items-center justify-center gap-2 mb-6 text-sm text-gray-500">
         <Shield className="w-4 h-4 text-green-500" />
         <span>Secured with encryption & CSRF protection</span>
@@ -658,16 +476,6 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
         <p className="text-gray-500 mt-1">Welcome back! Sign in to continue.</p>
       </div>
 
-      {/* Rate limiting warning */}
-      {remainingAttempts < 5 && (
-        <div className="mb-4 p-3 bg-amber-50 border border-amber-200 rounded-xl flex items-center gap-2">
-          <AlertCircle className="w-5 h-5 text-amber-500 flex-shrink-0" />
-          <span className="text-sm text-amber-700">
-            {remainingAttempts} login attempt{remainingAttempts !== 1 ? 's' : ''} remaining
-          </span>
-        </div>
-      )}
-
       <form onSubmit={handleLogin} className="space-y-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
@@ -720,7 +528,7 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
 
         <button
           type="submit"
-          disabled={loading || remainingAttempts <= 0}
+          disabled={loading}
           className={`w-full py-3 rounded-xl font-medium transition-all flex items-center justify-center gap-2 ${
             selectedRole === 'client'
               ? 'bg-gradient-to-r from-[#CFAFA3] to-[#B89A8E] text-white hover:shadow-lg hover:shadow-[#CFAFA3]/30'
@@ -740,6 +548,8 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
     </div>
   );
 
+
+
   // Signup Form
   const renderSignupForm = () => (
     <div>
@@ -758,7 +568,6 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
       </div>
 
       <form onSubmit={handleSignup} className="space-y-4">
-        {/* Hidden file input for avatar */}
         <input
           ref={avatarInputRef}
           type="file"
@@ -892,7 +701,6 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
           </div>
         </div>
 
-        {/* Show/Hide password toggle */}
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -984,17 +792,17 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
 
         <button
           type="submit"
-          disabled={loading || uploadingAvatar}
+          disabled={loading}
           className={`w-full py-3 rounded-xl font-medium transition-all flex items-center justify-center gap-2 ${
             selectedRole === 'client'
               ? 'bg-gradient-to-r from-[#CFAFA3] to-[#B89A8E] text-white hover:shadow-lg hover:shadow-[#CFAFA3]/30'
               : 'bg-[#2D2A3E] text-white hover:bg-[#3D3A4E]'
           } disabled:opacity-50 disabled:cursor-not-allowed`}
         >
-          {loading || uploadingAvatar ? (
+          {loading ? (
             <>
               <Loader2 className="w-5 h-5 animate-spin" />
-              {uploadingAvatar ? 'Uploading photo...' : 'Creating account...'}
+              Creating account...
             </>
           ) : (
             'Create Account'
@@ -1078,85 +886,26 @@ const AuthModal: React.FC<AuthModalProps> = ({ isOpen, onClose, initialMode = 'l
   );
 
   // Check Email View (after signup)
-  // Handler for resending verification email
-  const handleResendEmail = async () => {
-    if (!email) return;
-    setResendingEmail(true);
-    try {
-      const { error } = await supabase.auth.resend({
-        type: 'signup',
-        email: email.toLowerCase().trim(),
-        options: {
-          emailRedirectTo: `${window.location.origin}/confirm-email`,
-        },
-      });
-      
-      if (error) {
-        toast({
-          title: 'Error',
-          description: error.message,
-          variant: 'destructive',
-        });
-      } else {
-        toast({
-          title: 'Email Sent!',
-          description: 'A new verification email has been sent to your inbox.',
-        });
-      }
-    } catch (error: any) {
-      toast({
-        title: 'Error',
-        description: error.message || 'Failed to resend verification email',
-        variant: 'destructive',
-      });
-    } finally {
-      setResendingEmail(false);
-    }
-  };
-
   const renderCheckEmail = () => (
     <div className="text-center">
       <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-6">
         <Mail className="w-8 h-8 text-green-600" />
       </div>
       <h2 className="text-2xl font-serif font-bold text-[#2D2A3E] mb-2">Verify Your Email</h2>
-      <p className="text-gray-600 mb-4">
+      <p className="text-gray-600 mb-6">
         We've sent a verification link to <strong>{email}</strong>. Please check your inbox and click the link to activate your account.
       </p>
-      
-      <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6">
-        <p className="text-sm text-amber-800">
-          <strong>Important:</strong> You must verify your email before you can log in. Check your spam folder if you don't see the email.
-        </p>
-      </div>
-      
-      <div className="space-y-3">
-        <button
-          onClick={handleResendEmail}
-          disabled={resendingEmail}
-          className="w-full py-3 bg-gradient-to-r from-[#CFAFA3] to-[#B89A8E] text-white rounded-xl font-medium hover:shadow-lg hover:shadow-[#CFAFA3]/30 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
-        >
-          {resendingEmail ? (
-            <>
-              <Loader2 className="w-5 h-5 animate-spin" />
-              Sending...
-            </>
-          ) : (
-            'Resend Verification Email'
-          )}
-        </button>
-        <button
-          onClick={() => { setView('login'); resetForm(); }}
-          className="w-full py-3 bg-gray-100 text-gray-700 rounded-xl font-medium hover:bg-gray-200 transition-all"
-        >
-          Back to Login
-        </button>
-      </div>
+      <p className="text-sm text-gray-500 mb-6">
+        Didn't receive the email? Check your spam folder or try signing up again.
+      </p>
+      <button
+        onClick={() => { setView('login'); resetForm(); }}
+        className="w-full py-3 bg-[#2D2A3E] text-white rounded-xl font-medium hover:bg-[#3D3A4E] transition-all"
+      >
+        Back to Login
+      </button>
     </div>
   );
-
-
-
 
   // Render current view
   const renderView = () => {

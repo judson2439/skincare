@@ -273,7 +273,8 @@ const createInitialRoutine = (): RoutineStep[] => [
 
 const AppLayout: React.FC = () => {
   const { sidebarOpen, toggleSidebar } = useAppContext();
-  const { user, profile, loading: authLoading, signOut } = useAuth();
+  const { user, profile, loading: authLoading, isSessionValid, signOut, clearSessionAndRedirect, setUser, setProfile, setSession } = useAuth();
+
   const clientData = useClientData();
   const routineManagement = useRoutineManagement();
   const clientRoutines = useClientRoutines();
@@ -291,8 +292,22 @@ const AppLayout: React.FC = () => {
   const [authModalMode, setAuthModalMode] = useState<'login' | 'signup'>('login');
   const [authModalRole, setAuthModalRole] = useState<'client' | 'professional' | undefined>(undefined);
   
-  // View State
-  const [activeView, setActiveView] = useState('dashboard');
+  // View State - Initialize from localStorage to persist across page refreshes
+  const [activeView, setActiveView] = useState(() => {
+    if (typeof window !== 'undefined') {
+      const savedView = localStorage.getItem('skinaurapro_active_view');
+      return savedView || 'dashboard';
+    }
+    return 'dashboard';
+  });
+  
+  // Persist activeView to localStorage whenever it changes
+  useEffect(() => {
+    if (typeof window !== 'undefined' && activeView) {
+      localStorage.setItem('skinaurapro_active_view', activeView);
+    }
+  }, [activeView]);
+
   const [products, setProducts] = useState<Product[]>(initialProducts);
   const [clients] = useState<Client[]>(initialClients);
   const [routine, setRoutine] = useState<RoutineStep[]>(createInitialRoutine());
@@ -487,15 +502,28 @@ const AppLayout: React.FC = () => {
   };
 
 
-  // Handle logout
+  // Handle logout - using supabase directly
   const handleLogout = async () => {
-    await signOut();
-    setShowUserMenu(false);
-    toast({
-      title: 'Signed Out',
-      description: 'You have been successfully signed out.',
-    });
+    try {
+      await supabase.auth.signOut();
+      setUser(null);
+      setProfile(null);
+      setSession(null);
+      setShowUserMenu(false);
+      toast({
+        title: 'Signed Out',
+        description: 'You have been successfully signed out.',
+      });
+    } catch (error: any) {
+      console.error('Logout error:', error);
+      toast({
+        title: 'Error',
+        description: 'Failed to sign out. Please try again.',
+        variant: 'destructive',
+      });
+    }
   };
+
 
   // Routine handlers
   const toggleRoutineStep = (stepId: number) => {

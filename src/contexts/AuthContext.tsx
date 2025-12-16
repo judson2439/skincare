@@ -1,21 +1,15 @@
 /**
  * @fileoverview Authentication context provider for managing user authentication state.
- * Provides secure authentication with input sanitization and CSRF protection.
+ * Provides secure authentication with input sanitization and session management.
  * 
  * @module contexts/AuthContext
- * @version 1.0.0
+ * @version 1.3.0
  */
 
-import React, { createContext, useContext, useState, useEffect, useCallback, ReactNode } from 'react';
+import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { supabase } from '@/lib/supabase';
 import { User, Session, AuthError } from '@supabase/supabase-js';
-import {
-  sanitizeInput,
-  sanitizeObject,
-  setCSRFToken,
-  clearCSRFToken,
-  getCSRFToken,
-} from '@/lib/security';
+import { sanitizeInput } from '@/lib/security';
 
 // ============================================================================
 // TYPE DEFINITIONS
@@ -24,18 +18,6 @@ import {
 /**
  * User profile data stored in the database.
  * @interface UserProfile
- * @property {string} id - Unique user identifier (matches Supabase auth.users.id)
- * @property {string} email - User's email address
- * @property {string} full_name - User's display name
- * @property {string} [phone] - User's phone number
- * @property {'client' | 'professional'} role - User's role in the system
- * @property {string} [avatar_url] - URL to user's profile picture
- * @property {string} [skin_type] - Client's skin type (Normal, Dry, Oily, etc.)
- * @property {string[]} [concerns] - Client's skin concerns
- * @property {string} [business_name] - Professional's business name
- * @property {string} [license_number] - Professional's license number
- * @property {string} [created_at] - ISO timestamp of account creation
- * @property {string} [updated_at] - ISO timestamp of last profile update
  */
 interface UserProfile {
   id: string;
@@ -48,87 +30,71 @@ interface UserProfile {
   concerns?: string[];
   business_name?: string;
   license_number?: string;
+  professional_id?: string;
   created_at?: string;
   updated_at?: string;
 }
 
+/**
+ * Data required for user signup
+ * @interface SignUpData
+ */
+interface SignUpData {
+  email: string;
+  password: string;
+  full_name: string;
+  phone?: string;
+  role: 'client' | 'professional';
+  skin_type?: string;
+  concerns?: string[];
+  business_name?: string;
+  license_number?: string;
+  avatarFile?: File;
+}
 
+/**
+ * Result of signup operation
+ * @interface SignUpResult
+ */
+interface SignUpResult {
+  error: AuthError | Error | null;
+  session: Session | null;
+  user: User | null;
+  requiresEmailConfirmation: boolean;
+}
+
+/**
+ * Result of signin operation
+ * @interface SignInResult
+ */
+interface SignInResult {
+  error: AuthError | Error | null;
+  user: User | null;
+  profile: UserProfile | null;
+}
 
 /**
  * Authentication context value type.
- * Provides authentication state and methods to all child components.
- * 
  * @interface AuthContextType
  */
 interface AuthContextType {
-  /** Current Supabase user object, null if not authenticated */
   user: User | null;
-  
-  /** User's profile data from the database */
   profile: UserProfile | null;
-  
-  /** Current Supabase session, null if not authenticated */
   session: Session | null;
-  
-  /** Whether authentication state is being loaded */
   loading: boolean;
+  isSessionValid: boolean;
+  setUser: React.Dispatch<React.SetStateAction<User | null>>;
+  setProfile: React.Dispatch<React.SetStateAction<UserProfile | null>>;
+  setSession: React.Dispatch<React.SetStateAction<Session | null>>;
+  setLoading: React.Dispatch<React.SetStateAction<boolean>>;
   
-  /** Current CSRF token for secure requests */
-  csrfToken: string | null;
-  
-  /** 
-   * Register a new user account
-   * @param email - User's email address
-   * @param password - User's password
-   * @param userData - Additional profile data
-   * @returns Promise with error and session information
-   */
-  signUp: (email: string, password: string, userData: Partial<UserProfile>) => Promise<{ error: AuthError | Error | null; session: Session | null; user?: User | null }>;
-  
-  /**
-   * Sign in an existing user
-   * @param email - User's email address
-   * @param password - User's password
-   * @returns Promise with error information
-   */
-  signIn: (email: string, password: string) => Promise<{ error: AuthError | Error | null }>;
-  
-  /** Sign out the current user */
-  signOut: () => Promise<void>;
-  
-  /**
-   * Send password reset email
-   * @param email - User's email address
-   * @returns Promise with error information
-   */
-  resetPassword: (email: string) => Promise<{ error: AuthError | Error | null }>;
-  
-  /**
-   * Update user's password
-   * @param newPassword - The new password
-   * @returns Promise with error information
-   */
+  signUp: (data: SignUpData) => Promise<SignUpResult>;
+  signIn: (email: string, password: string) => Promise<SignInResult>;
+  signOut: () => Promise<{ error: Error | null }>;
   updatePassword: (newPassword: string) => Promise<{ error: AuthError | Error | null }>;
-  
-  /**
-   * Update user's profile data
-   * @param updates - Partial profile data to update
-   * @returns Promise with error information
-   */
   updateProfile: (updates: Partial<UserProfile>) => Promise<{ error: Error | null }>;
-  
-  /** Refresh profile data from the database */
-  refreshProfile: () => Promise<void>;
-  
-  /** Fetch a new CSRF token from the server */
-  refreshCSRFToken: () => Promise<void>;
-  
-  /**
-   * Resend verification email to user
-   * @param email - User's email address
-   * @returns Promise with error information
-   */
-  resendVerificationEmail: (email: string) => Promise<{ error: AuthError | Error | null }>;
+  refreshSession: () => Promise<{ success: boolean; error?: string }>;
+  clearSessionAndRedirect: () => Promise<void>;
 }
 
 
@@ -136,10 +102,6 @@ interface AuthContextType {
 // CONTEXT CREATION
 // ============================================================================
 
-/**
- * Authentication context instance.
- * @constant {React.Context<AuthContextType | undefined>}
- */
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 // ============================================================================
@@ -149,26 +111,6 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 /**
  * Custom hook to access authentication context.
  * Must be used within an AuthProvider component.
- * 
- * @function useAuth
- * @returns {AuthContextType} Authentication context value
- * @throws {Error} If used outside of AuthProvider
- * 
- * @example
- * function ProfilePage() {
- *   const { user, profile, signOut } = useAuth();
- * 
- *   if (!user) {
- *     return <LoginPrompt />;
- *   }
- * 
- *   return (
- *     <div>
- *       <h1>Welcome, {profile?.full_name}</h1>
- *       <button onClick={signOut}>Logout</button>
- *     </div>
- *   );
- * }
  */
 export const useAuth = () => {
   const context = useContext(AuthContext);
@@ -182,11 +124,6 @@ export const useAuth = () => {
 // PROVIDER PROPS
 // ============================================================================
 
-/**
- * Props for the AuthProvider component.
- * @interface AuthProviderProps
- * @property {ReactNode} children - Child components to wrap
- */
 interface AuthProviderProps {
   children: ReactNode;
 }
@@ -198,359 +135,309 @@ interface AuthProviderProps {
 /**
  * Authentication provider component.
  * Wraps the application to provide authentication state and methods.
- * 
- * Features:
- * - Automatic session persistence and restoration
- * - Real-time auth state synchronization
- * - Input sanitization for XSS protection
- * - CSRF token management
- * - Profile data management
- * 
- * @component
- * @param {AuthProviderProps} props - Component props
- * @returns {JSX.Element} Provider component wrapping children
- * 
- * @example
- * // Wrap your app with AuthProvider
- * function App() {
- *   return (
- *     <AuthProvider>
- *       <Router>
- *         <Routes>
- *           <Route path="/" element={<Home />} />
- *           <Route path="/profile" element={<Profile />} />
- *         </Routes>
- *       </Router>
- *     </AuthProvider>
- *   );
- * }
  */
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   // ========================================================================
   // STATE
   // ========================================================================
   
-  /** Current Supabase user */
   const [user, setUser] = useState<User | null>(null);
-  
-  /** User's profile from database */
   const [profile, setProfile] = useState<UserProfile | null>(null);
-  
-  /** Current Supabase session */
   const [session, setSession] = useState<Session | null>(null);
-  
-  /** Loading state during auth operations */
   const [loading, setLoading] = useState(true);
-  
-  /** Current CSRF token */
-  const [csrfToken, setCsrfTokenState] = useState<string | null>(null);
+  const [isSessionValid, setIsSessionValid] = useState(false);
 
   // ========================================================================
-  // CSRF TOKEN MANAGEMENT
+  // SESSION INITIALIZATION & AUTH STATE LISTENER
   // ========================================================================
 
-  /**
-   * Fetches a new CSRF token from the secure-auth edge function.
-   * Stores the token in both session storage and component state.
-   * 
-   * @async
-   * @function refreshCSRFToken
-   * @returns {Promise<void>}
-   */
-  const refreshCSRFToken = useCallback(async () => {
-    try {
-      // Use a short timeout to prevent blocking
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 3000);
-      
-      const { data, error } = await supabase.functions.invoke('secure-auth', {
-        body: { action: 'csrf' },
-      });
-      
-      clearTimeout(timeoutId);
-
-      if (!error && data?.csrfToken) {
-        setCSRFToken(data.csrfToken);
-        setCsrfTokenState(data.csrfToken);
-      }
-    } catch (err) {
-      // Silently fail - CSRF token is optional enhancement
-      console.log('CSRF token fetch skipped');
-    }
-  }, []);
-
-
-
-  // ========================================================================
-  // PROFILE MANAGEMENT
-  // ========================================================================
-
-  /**
-   * Fetches user profile data from the database.
-   * 
-   * @async
-   * @function fetchProfile
-   * @param {string} userId - The user's ID to fetch profile for
-   * @returns {Promise<UserProfile | null>} The user profile or null if not found
-   * @private
-   */
-  const fetchProfile = async (userId: string): Promise<UserProfile | null> => {
-    try {
-      const { data, error } = await supabase
-        .from('user_profiles')
-        .select('*')
-        .eq('id', userId)
-        .maybeSingle();
-
-      if (error) {
-        console.error('Error fetching profile:', error);
-        return null;
-      }
-      
-      // Profile may not exist yet for newly created users
-      if (!data) {
-        console.log('No profile found for user, may be newly created');
-        return null;
-      }
-      
-      return data as UserProfile;
-    } catch (error) {
-      console.error('Error fetching profile:', error);
-      return null;
-    }
-  };
-
-  /**
-   * Refreshes the current user's profile data from the database.
-   * 
-   * @async
-   * @function refreshProfile
-   * @returns {Promise<void>}
-   */
-  const refreshProfile = async () => {
-    if (user) {
-      const profileData = await fetchProfile(user.id);
-      setProfile(profileData);
-    }
-  };
-
-  // ========================================================================
-  // AUTH STATE INITIALIZATION
-  // ========================================================================
-
-  /**
-   * Effect to initialize authentication state on mount.
-   * - Restores session from storage
-   * - Fetches user profile
-   * - Sets up auth state change listener
-   * - Manages CSRF tokens
-   */
   useEffect(() => {
     /**
-     * Initializes authentication state from stored session.
-     * @async
+     * Initialize session on mount using supabase.auth.getSession() and getUser()
+     * This handles page refresh scenarios
      */
-    const initAuth = async () => {
+    const initializeSession = async () => {
       try {
-        // Set a maximum timeout for the entire auth initialization
-        const initTimeout = setTimeout(() => {
-          console.log('Auth initialization timeout - setting loading to false');
+        console.log('[AuthContext] Initializing session...');
+        
+        // Step 1: Get current session using supabase.auth.getSession()
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        
+        if (sessionError) {
+          console.error('[AuthContext] Error getting session:', sessionError);
           setLoading(false);
-        }, 5000); // 5 second max timeout
-
-        // Get existing session from Supabase
-        const { data: { session: currentSession } } = await supabase.auth.getSession();
-        setSession(currentSession);
-        setUser(currentSession?.user ?? null);
-        
-        // If user is authenticated, fetch their profile
-        if (currentSession?.user) {
-          const profileData = await fetchProfile(currentSession.user.id);
-          setProfile(profileData);
-          
-          // Fetch CSRF token in background (don't block on it)
-          refreshCSRFToken().catch(() => {
-            console.log('CSRF token fetch failed silently');
-          });
+          setIsSessionValid(false);
+          return;
         }
+
+        // If no session exists, user is not logged in
+        if (!sessionData.session) {
+          console.log('[AuthContext] No active session found');
+          setUser(null);
+          setProfile(null);
+          setSession(null);
+          setIsSessionValid(false);
+          setLoading(false);
+          return;
+        }
+
+        console.log('[AuthContext] Session found, validating...');
+
+        // Step 2: Validate session by getting user with supabase.auth.getUser()
+        // This makes a request to the Supabase Auth server to validate the JWT
+        const { data: userData, error: userError } = await supabase.auth.getUser();
+
+        if (userError || !userData.user) {
+          console.error('[AuthContext] Session invalid or user not found:', userError);
+          // Session is invalid, clear everything
+          await clearSessionAndRedirect();
+          return;
+        }
+
+        console.log('[AuthContext] User validated:', userData.user.id);
+
+        // Step 3: Fetch user profile from user_profiles table
+        const { data: profileData, error: profileError } = await supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('id', userData.user.id)
+          .maybeSingle();
+
+        if (profileError) {
+          console.error('[AuthContext] Error fetching profile:', profileError);
+          // User exists but profile fetch failed - still set user and session
+          setUser(userData.user);
+          setSession(sessionData.session);
+          setProfile(null);
+          setIsSessionValid(true);
+          setLoading(false);
+          return;
+        }
+
+        // Step 4: Set all state
+        setUser(userData.user);
+        setSession(sessionData.session);
+        setProfile(profileData as UserProfile | null);
+        setIsSessionValid(true);
         
-        clearTimeout(initTimeout);
+        console.log('[AuthContext] Session initialized successfully', {
+          userId: userData.user.id,
+          role: profileData?.role
+        });
+
       } catch (error) {
-        console.error('Error initializing auth:', error);
+        console.error('[AuthContext] Unexpected error during session initialization:', error);
+        setIsSessionValid(false);
       } finally {
         setLoading(false);
       }
     };
 
-    initAuth();
+    // Initialize session on mount
+    initializeSession();
 
-    // Subscribe to auth state changes (login, logout, token refresh)
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, newSession) => {
-      setSession(newSession);
-      setUser(newSession?.user ?? null);
+    // Set up auth state change listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (event, currentSession) => {
+        console.log('[AuthContext] Auth state changed:', event);
 
-      if (newSession?.user) {
-        // User signed in - fetch profile and refresh CSRF token
-        const profileData = await fetchProfile(newSession.user.id);
-        setProfile(profileData);
-        // Don't await CSRF token - do it in background
-        refreshCSRFToken().catch(() => {});
-      } else {
-        // User signed out - clear profile and CSRF token
-        setProfile(null);
-        clearCSRFToken();
-        setCsrfTokenState(null);
+        if (event === 'SIGNED_IN' && currentSession) {
+          // User signed in - update state
+          setSession(currentSession);
+          setUser(currentSession.user);
+          setIsSessionValid(true);
+
+          // Fetch profile
+          const { data: profileData } = await supabase
+            .from('user_profiles')
+            .select('*')
+            .eq('id', currentSession.user.id)
+            .maybeSingle();
+
+          if (profileData) {
+            setProfile(profileData as UserProfile);
+          }
+        } else if (event === 'SIGNED_OUT') {
+          // User signed out - clear state
+          setUser(null);
+          setProfile(null);
+          setSession(null);
+          setIsSessionValid(false);
+        } else if (event === 'TOKEN_REFRESHED' && currentSession) {
+          // Token was refreshed - update session
+          setSession(currentSession);
+          setIsSessionValid(true);
+        } else if (event === 'USER_UPDATED' && currentSession) {
+          // User was updated - refresh user data
+          setUser(currentSession.user);
+        }
       }
-
-      // Handle explicit sign out event
-      if (event === 'SIGNED_OUT') {
-        setProfile(null);
-        clearCSRFToken();
-        setCsrfTokenState(null);
-      }
-    });
+    );
 
     // Cleanup subscription on unmount
     return () => {
       subscription.unsubscribe();
     };
-  }, [refreshCSRFToken]);
+  }, []);
 
+  // ========================================================================
+  // AVATAR UPLOAD HELPER
+  // ========================================================================
+
+  /**
+   * Uploads avatar to progress-photos bucket
+   * @param userId - The user's ID
+   * @param avatarFile - The avatar file to upload
+   * @returns The public URL of the uploaded avatar or null
+   */
+  const uploadAvatar = async (userId: string, avatarFile: File): Promise<string | null> => {
+    try {
+      // Validate file type
+      const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+      if (!allowedTypes.includes(avatarFile.type)) {
+        console.error('Invalid file type for avatar');
+        return null;
+      }
+
+      // Validate file size (max 5MB)
+      if (avatarFile.size > 5 * 1024 * 1024) {
+        console.error('Avatar file too large');
+        return null;
+      }
+
+      // Get file extension
+      const fileExt = avatarFile.name.split('.').pop()?.toLowerCase();
+      const allowedExtensions = ['jpg', 'jpeg', 'png', 'gif', 'webp'];
+      
+      if (!fileExt || !allowedExtensions.includes(fileExt)) {
+        console.error('Invalid file extension');
+        return null;
+      }
+
+      // Create unique filename
+      const fileName = `${userId}-${Date.now()}.${fileExt}`;
+      const filePath = `avatars/${fileName}`;
+
+      // Upload to progress-photos bucket
+      const { error: uploadError } = await supabase.storage
+        .from('progress-photos')
+        .upload(filePath, avatarFile, {
+          cacheControl: '3600',
+          upsert: false
+        });
+
+      if (uploadError) {
+        console.error('Avatar upload error:', uploadError);
+        return null;
+      }
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('progress-photos')
+        .getPublicUrl(filePath);
+
+      return publicUrl;
+    } catch (error) {
+      console.error('Avatar upload error:', error);
+      return null;
+    }
+  };
 
   // ========================================================================
   // AUTHENTICATION METHODS
   // ========================================================================
 
   /**
-   * Registers a new user with email and password.
-   * All user data is sanitized to prevent XSS attacks.
+   * Registers a new user with comprehensive profile creation.
+   * Uses the signup-with-avatar edge function to handle:
+   * 1. User creation in auth.users
+   * 2. Avatar upload to progress-photos bucket (bypasses RLS with service role)
+   * 3. Profile creation in user_profiles table
+   * 4. Sending confirmation email
    * 
-   * @async
-   * @function signUp
-   * @param {string} email - User's email address
-   * @param {string} password - User's password
-   * @param {Partial<UserProfile>} userData - Additional profile data
-   * @returns {Promise<{error: AuthError | Error | null, session: Session | null, user?: User | null}>}
-   * 
-   * @example
-   * const { error, session } = await signUp(
-   *   'user@example.com',
-   *   'SecurePassword123!',
-   *   { full_name: 'John Doe', role: 'client' }
-   * );
-   * 
-   * if (error) {
-   *   showError(error.message);
-   * } else if (session) {
-   *   // User is logged in
-   *   redirectToDashboard();
-   * } else {
-   *   // Email confirmation required
-   *   showConfirmationMessage();
-   * }
+   * @param data - SignUpData containing all user information
+   * @returns SignUpResult with error, session, user, and confirmation status
    */
-  const signUp = async (email: string, password: string, userData: Partial<UserProfile>) => {
+  const signUp = async (data: SignUpData): Promise<SignUpResult> => {
     try {
-      // Sanitize all user-provided data to prevent XSS attacks
-      const sanitizedEmail = sanitizeInput(email.toLowerCase().trim());
-      const sanitizedUserData = {
-        full_name: sanitizeInput(userData.full_name || ''),
-        phone: userData.phone ? sanitizeInput(userData.phone) : null,
-        role: userData.role || 'client',
-        avatar_url: userData.avatar_url ? sanitizeInput(userData.avatar_url) : null,
-        skin_type: userData.skin_type ? sanitizeInput(userData.skin_type) : null,
-        concerns: userData.concerns ? userData.concerns.map(c => sanitizeInput(c)) : null,
-        business_name: userData.business_name ? sanitizeInput(userData.business_name) : null,
-        license_number: userData.license_number ? sanitizeInput(userData.license_number) : null,
-      };
+      // Sanitize all user-provided data
+      const sanitizedEmail = sanitizeInput(data.email.toLowerCase().trim());
+      const sanitizedFullName = sanitizeInput(data.full_name.trim());
+      const sanitizedPhone = data.phone ? sanitizeInput(data.phone.trim()) : null;
+      const sanitizedSkinType = data.skin_type ? sanitizeInput(data.skin_type) : null;
+      const sanitizedConcerns = data.concerns ? data.concerns.map(c => sanitizeInput(c)) : null;
+      const sanitizedBusinessName = data.business_name ? sanitizeInput(data.business_name.trim()) : null;
+      const sanitizedLicenseNumber = data.license_number ? sanitizeInput(data.license_number.trim()) : null;
+
+      // Create FormData for the edge function
+      const formData = new FormData();
+      formData.append('email', sanitizedEmail);
+      formData.append('password', data.password);
+      formData.append('fullName', sanitizedFullName);
+      formData.append('role', data.role);
       
-      // =========================================================================
-      // CRITICAL: Email Verification Configuration
-      // =========================================================================
-      // 
-      // The `email_verified` field in raw_user_meta_data is AUTOMATICALLY set by
-      // Supabase based on the "Confirm email" setting in the Dashboard.
-      // 
-      // YOU CANNOT CONTROL THIS FROM CODE!
-      // 
-      // If you see `email_verified: true` immediately after signup, it means
-      // "Confirm email" is DISABLED in your Supabase Dashboard.
-      //
-      // TO FIX THIS:
-      // 1. Go to Supabase Dashboard
-      // 2. Navigate to: Authentication > Providers > Email
-      // 3. ENABLE the "Confirm email" toggle
-      // 4. Click "Save"
-      //
-      // When "Confirm email" is ENABLED:
-      // - email_verified will be FALSE initially
-      // - email_confirmed_at will be NULL until verified
-      // - User CANNOT log in until they click the verification link
-      // - Supabase sends a verification email automatically
-      //
-      // When "Confirm email" is DISABLED (default):
-      // - email_verified is set to TRUE immediately
-      // - email_confirmed_at is set immediately
-      // - User can log in right away without verification
-      //
-      // DO NOT try to set email_verified in the options.data below - Supabase
-      // will override it based on the Dashboard setting anyway.
-      // =========================================================================
-      
-      const { data, error } = await supabase.auth.signUp({
-        email: sanitizedEmail,
-        password,
-        options: {
-          // This URL is where users will be redirected after clicking the email confirmation link
-          // Make sure this URL is added to the allowed redirect URLs in Supabase Dashboard
-          emailRedirectTo: `${window.location.origin}/confirm-email`,
-          // Only include non-auth related metadata
-          // DO NOT include email_verified here - Supabase manages this automatically
-          data: {
-            full_name: sanitizedUserData.full_name,
-            role: sanitizedUserData.role,
-          }
-        }
+      if (sanitizedPhone) {
+        formData.append('phone', sanitizedPhone);
+      }
+      if (sanitizedSkinType) {
+        formData.append('skinType', sanitizedSkinType);
+      }
+      if (sanitizedConcerns && sanitizedConcerns.length > 0) {
+        formData.append('concerns', JSON.stringify(sanitizedConcerns));
+      }
+      if (sanitizedBusinessName) {
+        formData.append('businessName', sanitizedBusinessName);
+      }
+      if (sanitizedLicenseNumber) {
+        formData.append('licenseNumber', sanitizedLicenseNumber);
+      }
+      if (data.avatarFile) {
+        formData.append('avatar', data.avatarFile);
+      }
+
+      // Call the signup-with-avatar edge function using supabase.functions.fetch
+      const response = await supabase.functions.invoke('signup-with-avatar', {
+        method: 'POST',
+        body: formData,
       });
 
+      // Supabase functions.invoke returns: { data, error }
+      // API result should be in response.data, not .json()
+      const { data: result, error: invokeError } = response;
 
-      if (error) return { error, session: null, user: null };
-
-      // Create user profile in database
-      // Note: Email verification status is tracked in auth.users.email_confirmed_at
-      // and should be accessed via user.email_confirmed_at, not stored in user_profiles
-      if (data.user) {
-        const { error: profileError } = await supabase
-          .from('user_profiles')
-          .insert({
-            id: data.user.id,
-            email: sanitizedEmail,
-            full_name: sanitizedUserData.full_name,
-            phone: sanitizedUserData.phone,
-            role: sanitizedUserData.role,
-            avatar_url: sanitizedUserData.avatar_url,
-            skin_type: sanitizedUserData.skin_type,
-            concerns: sanitizedUserData.concerns,
-            business_name: sanitizedUserData.business_name,
-            license_number: sanitizedUserData.license_number,
-          });
-
-        if (profileError) {
-          console.error('Error creating profile:', profileError);
-          return { error: profileError, session: null, user: data.user };
-        }
+      if (invokeError || !result || result.error) {
+        return {
+          error: new Error(
+            invokeError?.message || result?.error || 'Failed to create account'
+          ),
+          session: null,
+          user: null,
+          requiresEmailConfirmation: false,
+        };
       }
 
-
-      // If session is null but user exists, email confirmation is required
-      // This is the expected behavior when "Confirm email" is enabled in Supabase
-      if (data.session) {
-        await refreshCSRFToken();
-      }
-
-      return { error: null, session: data.session, user: data.user };
+      // Signup successful
+      return {
+        error: null,
+        session: null, // Session will be created after email confirmation
+        user: result.user ? {
+          id: result.user.id,
+          email: result.user.email,
+          user_metadata: {
+            full_name: result.user.full_name,
+            role: result.user.role,
+          },
+        } as unknown as User : null,
+        requiresEmailConfirmation: result.requiresEmailConfirmation ?? true,
+      };
     } catch (error) {
-      return { error: error as Error, session: null, user: null };
+      console.error('SignUp error:', error);
+      return {
+        error: error as Error,
+        session: null,
+        user: null,
+        requiresEmailConfirmation: false,
+      };
     }
   };
 
@@ -558,129 +445,220 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   /**
    * Signs in an existing user with email and password.
-   * Email is sanitized before authentication.
+   * 1. Authenticates with auth.users table via Supabase Auth
+   * 2. Fetches user profile from public.user_profiles table
+   * 3. Returns both auth result and profile with role for navigation
    * 
-   * @async
-   * @function signIn
-   * @param {string} email - User's email address
-   * @param {string} password - User's password
-   * @returns {Promise<{error: AuthError | Error | null}>}
-   * 
-   * @example
-   * const { error } = await signIn('user@example.com', 'password123');
-   * if (error) {
-   *   showError('Invalid credentials');
-   * } else {
-   *   redirectToDashboard();
-   * }
+   * @param email - User's email address
+   * @param password - User's password
+   * @returns SignInResult with error, user, and profile (including role)
    */
-  const signIn = async (email: string, password: string) => {
+  const signIn = async (email: string, password: string): Promise<SignInResult> => {
     try {
-      // Sanitize email to prevent injection attacks
+      // Step 1: Sanitize email input
       const sanitizedEmail = sanitizeInput(email.toLowerCase().trim());
 
-      const { error } = await supabase.auth.signInWithPassword({
+      // Step 2: Authenticate with auth.users table
+      const { data: authData, error: authError } = await supabase.auth.signInWithPassword({
         email: sanitizedEmail,
         password,
       });
 
-      if (!error) {
-        // Fetch CSRF token after successful login
-        await refreshCSRFToken();
+      // If authentication fails, return error
+      if (authError) {
+        return {
+          error: authError,
+          user: null,
+          profile: null,
+        };
       }
 
-      return { error };
-    } catch (error) {
-      return { error: error as Error };
-    }
-  };
+      // Step 3: Check if we have a user from auth
+      if (!authData.user) {
+        return {
+          error: new Error('Authentication failed: No user returned'),
+          user: null,
+          profile: null,
+        };
+      }
 
-  /**
-   * Signs out the current user and clears all security tokens.
-   * 
-   * @async
-   * @function signOut
-   * @returns {Promise<void>}
-   * 
-   * @description
-   * This function:
-   * 1. Calls secure logout endpoint to clear httpOnly cookies
-   * 2. Signs out from Supabase
-   * 3. Clears local state (user, profile, session)
-   * 4. Clears CSRF token
-   */
-  const signOut = async () => {
-    try {
-      // Call secure logout endpoint to clear httpOnly cookies on server
-      await supabase.functions.invoke('secure-auth', {
-        body: { action: 'logout' },
-      });
-    } catch (err) {
-      console.error('Error calling secure logout:', err);
-    }
-
-
-    // Clear local auth state
-    await supabase.auth.signOut();
-    setUser(null);
-    setProfile(null);
-    setSession(null);
-    
-    // Clear CSRF token from storage and state
-    clearCSRFToken();
-    setCsrfTokenState(null);
-  };
-
-  /**
-   * Sends a password reset email to the specified address.
-   * 
-   * @async
-   * @function resetPassword
-   * @param {string} email - User's email address
-   * @returns {Promise<{error: AuthError | Error | null}>}
-   * 
-   * @example
-   * const { error } = await resetPassword('user@example.com');
-   * if (!error) {
-   *   showMessage('Check your email for reset instructions');
-   * }
-   */
-  const resetPassword = async (email: string) => {
-    try {
-      // Sanitize email before sending
-      const sanitizedEmail = sanitizeInput(email.toLowerCase().trim());
+      // Step 4: Verify session was stored using getSession()
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
       
-      const { error } = await supabase.auth.resetPasswordForEmail(sanitizedEmail, {
-        redirectTo: `${window.location.origin}/reset-password`,
-      });
-      return { error };
+      if (sessionError || !sessionData.session) {
+        console.error('Session not stored after sign in:', sessionError);
+        return {
+          error: new Error('Failed to establish session'),
+          user: null,
+          profile: null,
+        };
+      }
+
+      // Step 5: Fetch user profile from public.user_profiles table
+      const { data: profileData, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('id', authData.user.id)
+        .maybeSingle();
+
+      if (profileError) {
+        console.error('Error fetching profile after login:', profileError);
+        // User is authenticated but profile fetch failed
+        // Still return success but with null profile
+        return {
+          error: null,
+          user: authData.user,
+          profile: null,
+        };
+      }
+
+      if (!profileData) {
+        console.warn('No profile found for authenticated user');
+        return {
+          error: null,
+          user: authData.user,
+          profile: null,
+        };
+      }
+
+      // Step 6: Update local state
+      setUser(authData.user);
+      setSession(sessionData.session);
+      setProfile(profileData as UserProfile);
+      setIsSessionValid(true);
+
+      // Step 7: Return success with user and profile
+      return {
+        error: null,
+        user: authData.user,
+        profile: profileData as UserProfile,
+      };
     } catch (error) {
+      console.error('SignIn error:', error);
+      return {
+        error: error as Error,
+        user: null,
+        profile: null,
+      };
+    }
+  };
+
+  /**
+   * Signs out the current user and clears all local state.
+   */
+  const signOut = async (): Promise<{ error: Error | null }> => {
+    try {
+      const { error } = await supabase.auth.signOut();
+      
+      if (error) {
+        console.error('Sign out error:', error);
+        return { error };
+      }
+
+      // Clear local state
+      setUser(null);
+      setProfile(null);
+      setSession(null);
+      setIsSessionValid(false);
+
+      return { error: null };
+    } catch (error) {
+      console.error('Sign out error:', error);
       return { error: error as Error };
+    }
+  };
+
+  /**
+   * Clears the session and redirects to the home page.
+   * Used when session is invalid or expired.
+   */
+  const clearSessionAndRedirect = async (): Promise<void> => {
+    try {
+      console.log('[AuthContext] Clearing session and redirecting...');
+      
+      // Sign out from Supabase
+      await supabase.auth.signOut();
+      
+      // Clear local state
+      setUser(null);
+      setProfile(null);
+      setSession(null);
+      setIsSessionValid(false);
+      setLoading(false);
+
+      // Redirect to home page
+      if (typeof window !== 'undefined' && window.location.pathname !== '/') {
+        window.location.href = '/';
+      }
+    } catch (error) {
+      console.error('[AuthContext] Error clearing session:', error);
+      // Still clear local state even if signOut fails
+      setUser(null);
+      setProfile(null);
+      setSession(null);
+      setIsSessionValid(false);
+      setLoading(false);
+    }
+  };
+
+  /**
+   * Refreshes the current session and re-fetches user profile.
+   * Useful for validating session on protected routes.
+   */
+  const refreshSession = async (): Promise<{ success: boolean; error?: string }> => {
+    try {
+      // Get current session
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+
+      if (sessionError) {
+        console.error('[AuthContext] Error refreshing session:', sessionError);
+        return { success: false, error: sessionError.message };
+      }
+
+      if (!sessionData.session) {
+        return { success: false, error: 'No active session' };
+      }
+
+      // Validate user
+      const { data: userData, error: userError } = await supabase.auth.getUser();
+
+      if (userError || !userData.user) {
+        console.error('[AuthContext] User validation failed:', userError);
+        return { success: false, error: userError?.message || 'User not found' };
+      }
+
+      // Fetch profile
+      const { data: profileData, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('*')
+        .eq('id', userData.user.id)
+        .maybeSingle();
+
+      if (profileError) {
+        console.error('[AuthContext] Error fetching profile:', profileError);
+      }
+
+      // Update state
+      setUser(userData.user);
+      setSession(sessionData.session);
+      setProfile(profileData as UserProfile | null);
+      setIsSessionValid(true);
+
+      return { success: true };
+    } catch (error) {
+      console.error('[AuthContext] Unexpected error refreshing session:', error);
+      return { success: false, error: 'Unexpected error' };
     }
   };
 
   /**
    * Updates the current user's password.
-   * 
-   * @async
-   * @function updatePassword
-   * @param {string} newPassword - The new password
-   * @returns {Promise<{error: AuthError | Error | null}>}
-   * 
-   * @description
-   * After successful password update, a new CSRF token is fetched
-   * to ensure continued security.
    */
   const updatePassword = async (newPassword: string) => {
     try {
       const { error } = await supabase.auth.updateUser({
         password: newPassword,
       });
-      
-      if (!error) {
-        // Refresh CSRF token after password change for security
-        await refreshCSRFToken();
-      }
       
       return { error };
     } catch (error) {
@@ -690,28 +668,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   /**
    * Updates the current user's profile data.
-   * All input is sanitized to prevent XSS attacks.
-   * 
-   * @async
-   * @function updateProfile
-   * @param {Partial<UserProfile>} updates - Profile fields to update
-   * @returns {Promise<{error: Error | null}>}
-   * 
-   * @example
-   * const { error } = await updateProfile({
-   *   full_name: 'Jane Doe',
-   *   phone: '+1234567890'
-   * });
-   * 
-   * if (!error) {
-   *   showSuccess('Profile updated');
-   * }
    */
   const updateProfile = async (updates: Partial<UserProfile>) => {
     if (!user) return { error: new Error('No user logged in') };
 
     try {
-      // Sanitize all update fields to prevent XSS
       const sanitizedUpdates: Partial<UserProfile> = {};
       
       if (updates.full_name !== undefined) {
@@ -736,7 +697,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         sanitizedUpdates.license_number = updates.license_number ? sanitizeInput(updates.license_number) : undefined;
       }
 
-      // Update profile in database
       const { error } = await supabase
         .from('user_profiles')
         .update({
@@ -745,43 +705,19 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         })
         .eq('id', user.id);
 
-      // Refresh local profile state on success
-      if (!error) {
-        await refreshProfile();
+      if (!error && user) {
+        // Fetch updated profile
+        const { data: updatedProfile } = await supabase
+          .from('user_profiles')
+          .select('*')
+          .eq('id', user.id)
+          .maybeSingle();
+        
+        if (updatedProfile) {
+          setProfile(updatedProfile as UserProfile);
+        }
       }
 
-      return { error };
-    } catch (error) {
-      return { error: error as Error };
-    }
-  };
-
-  /**
-   * Resends the verification email to the specified address.
-   * 
-   * @async
-   * @function resendVerificationEmail
-   * @param {string} email - User's email address
-   * @returns {Promise<{error: AuthError | Error | null}>}
-   * 
-   * @example
-   * const { error } = await resendVerificationEmail('user@example.com');
-   * if (!error) {
-   *   showMessage('Verification email sent');
-   * }
-   */
-  const resendVerificationEmail = async (email: string) => {
-    try {
-      const sanitizedEmail = sanitizeInput(email.toLowerCase().trim());
-      
-      const { error } = await supabase.auth.resend({
-        type: 'signup',
-        email: sanitizedEmail,
-        options: {
-          emailRedirectTo: `${window.location.origin}/confirm-email`,
-        },
-      });
-      
       return { error };
     } catch (error) {
       return { error: error as Error };
@@ -792,26 +728,24 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   // CONTEXT VALUE
   // ========================================================================
 
-  /**
-   * Context value object containing all auth state and methods.
-   */
   const value = {
     user,
     profile,
     session,
     loading,
-    csrfToken,
+    isSessionValid,
+    setUser,
+    setProfile,
+    setSession,
+    setLoading,
     signUp,
     signIn,
     signOut,
-    resetPassword,
     updatePassword,
     updateProfile,
-    refreshProfile,
-    refreshCSRFToken,
-    resendVerificationEmail,
+    refreshSession,
+    clearSessionAndRedirect,
   };
-
 
   // ========================================================================
   // RENDER

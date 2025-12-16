@@ -11,7 +11,6 @@ import { Loader2, Sparkles } from 'lucide-react';
 // Lazy load pages for better performance
 const Index = lazy(() => import("./pages/Index"));
 const ResetPassword = lazy(() => import("./pages/ResetPassword"));
-const ConfirmEmail = lazy(() => import("./pages/ConfirmEmail"));
 const ApiDocs = lazy(() => import("./pages/ApiDocs"));
 const NotFound = lazy(() => import("./pages/NotFound"));
 const ClientProfile = lazy(() => import("./pages/ClientProfile"));
@@ -51,12 +50,14 @@ const App = () => (
             <Suspense fallback={<PageLoader />}>
               <Routes>
                 <Route path="/" element={<Index />} />
+                <Route path="/client" element={<Index />} />
+                <Route path="/professional" element={<Index />} />
                 <Route path="/profile" element={<ClientProfile />} />
                 <Route path="/reset-password" element={<ResetPassword />} />
-                <Route path="/confirm-email" element={<ConfirmEmail />} />
                 <Route path="/api-docs" element={<ApiDocs />} />
                 <Route path="*" element={<NotFound />} />
               </Routes>
+
             </Suspense>
           </BrowserRouter>
         </TooltipProvider>
