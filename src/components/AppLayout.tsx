@@ -1,5 +1,6 @@
 // AppLayout.tsx - Main application layout component
 import React, { useState, useEffect, useRef } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import { useAppContext } from '@/contexts/AppContext';
 import { useAuth } from '@/contexts/AuthContext';
@@ -274,6 +275,8 @@ const createInitialRoutine = (): RoutineStep[] => [
 const AppLayout: React.FC = () => {
   const { sidebarOpen, toggleSidebar } = useAppContext();
   const { user, profile, loading: authLoading, isSessionValid, signOut, clearSessionAndRedirect, setUser, setProfile, setSession } = useAuth();
+  const location = useLocation();
+  const navigate = useNavigate();
 
   const clientData = useClientData();
   const routineManagement = useRoutineManagement();
@@ -291,15 +294,42 @@ const AppLayout: React.FC = () => {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [authModalMode, setAuthModalMode] = useState<'login' | 'signup'>('login');
   const [authModalRole, setAuthModalRole] = useState<'client' | 'professional' | undefined>(undefined);
-  
-  // View State - Initialize from localStorage to persist across page refreshes
+
+  // Helper function to extract view from URL path
+  const getViewFromPath = (pathname: string): string => {
+    // Extract the view from paths like /professional/dashboard or /client/routine
+    const parts = pathname.split('/').filter(Boolean);
+    if (parts.length >= 2) {
+      return parts[1]; // Returns 'dashboard', 'clients', 'routine', etc.
+    }
+    return 'dashboard'; // Default to dashboard
+  };
+
+  // View State - Initialize from URL path first, then localStorage as fallback
   const [activeView, setActiveView] = useState(() => {
     if (typeof window !== 'undefined') {
+      // First check URL path
+      const viewFromPath = getViewFromPath(location.pathname);
+      if (viewFromPath && viewFromPath !== 'dashboard') {
+        return viewFromPath;
+      }
+      // Fallback to localStorage
       const savedView = localStorage.getItem('skinaurapro_active_view');
       return savedView || 'dashboard';
     }
     return 'dashboard';
   });
+  
+  // Sync activeView with URL path changes
+  useEffect(() => {
+    const viewFromPath = getViewFromPath(location.pathname);
+    // Only update if we're on a valid sub-route (not just /professional or /client)
+    if (location.pathname.includes('/professional/') || location.pathname.includes('/client/')) {
+      if (viewFromPath !== activeView) {
+        setActiveView(viewFromPath);
+      }
+    }
+  }, [location.pathname]);
   
   // Persist activeView to localStorage whenever it changes
   useEffect(() => {
@@ -307,6 +337,15 @@ const AppLayout: React.FC = () => {
       localStorage.setItem('skinaurapro_active_view', activeView);
     }
   }, [activeView]);
+
+  // Helper function to navigate to a view
+  const navigateToView = (viewId: string) => {
+    const basePath = userRole === 'client' ? '/client' : '/professional';
+    navigate(`${basePath}/${viewId}`);
+    setActiveView(viewId);
+    if (isMobile) toggleSidebar();
+  };
+
 
   const [products, setProducts] = useState<Product[]>(initialProducts);
   const [clients] = useState<Client[]>(initialClients);
@@ -420,6 +459,19 @@ const AppLayout: React.FC = () => {
     }
   }, [authLoading]);
 
+  // Redirect authenticated users from "/" to their dashboard
+  useEffect(() => {
+    // Only redirect when:
+    // 1. Auth is not loading
+    // 2. User is logged in with a profile
+    // 3. Current path is exactly "/"
+    if (!authLoading && user && profile && location.pathname === '/') {
+      const targetPath = profile.role === 'client' ? '/client' : '/professional';
+      console.log(`[AppLayout] Authenticated user on "/", redirecting to ${targetPath}`);
+      navigate(targetPath, { replace: true });
+    }
+  }, [authLoading, user, profile, location.pathname, navigate]);
+
   // Refresh all data handler
   const handleRefreshData = async () => {
     if (isRefreshing) return;
@@ -502,18 +554,36 @@ const AppLayout: React.FC = () => {
   };
 
 
-  // Handle logout - using supabase directly
+  // Handle logout - clear localStorage and redirect to "/"
   const handleLogout = async () => {
     try {
-      await supabase.auth.signOut();
-      setUser(null);
-      setProfile(null);
-      setSession(null);
+      // Use signOut from AuthContext which handles clearing auth localStorage
+      const { error } = await signOut();
+      
+      if (error) {
+        console.error('Logout error:', error);
+        toast({
+          title: 'Error',
+          description: 'Failed to sign out. Please try again.',
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      // Clear the active view from localStorage
+      localStorage.removeItem('skinaurapro_active_view');
+      
+      // Close user menu
       setShowUserMenu(false);
+      
+      // Show success message
       toast({
         title: 'Signed Out',
         description: 'You have been successfully signed out.',
       });
+      
+      // Redirect to home page
+      window.location.href = '/';
     } catch (error: any) {
       console.error('Logout error:', error);
       toast({
@@ -523,6 +593,7 @@ const AppLayout: React.FC = () => {
       });
     }
   };
+
 
 
   // Routine handlers
@@ -1084,7 +1155,7 @@ const AppLayout: React.FC = () => {
           {navItems.map(item => (
             <button
               key={item.id}
-              onClick={() => { setActiveView(item.id); if (isMobile) toggleSidebar(); }}
+              onClick={() => navigateToView(item.id)}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all ${
                 activeView === item.id
                   ? 'bg-gradient-to-r from-[#CFAFA3]/20 to-transparent text-[#CFAFA3] border-l-2 border-[#CFAFA3]'
@@ -1096,6 +1167,7 @@ const AppLayout: React.FC = () => {
             </button>
           ))}
         </nav>
+
 
         {/* Level Progress (Client only) */}
         {userRole === 'client' && (

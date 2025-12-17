@@ -91,6 +91,7 @@ interface AuthContextType {
   signUp: (data: SignUpData) => Promise<SignUpResult>;
   signIn: (email: string, password: string) => Promise<SignInResult>;
   signOut: () => Promise<{ error: Error | null }>;
+  resetPassword: (email: string) => Promise<{ error: AuthError | Error | null }>;
   updatePassword: (newPassword: string) => Promise<{ error: AuthError | Error | null }>;
   updateProfile: (updates: Partial<UserProfile>) => Promise<{ error: Error | null }>;
   refreshSession: () => Promise<{ success: boolean; error?: string }>;
@@ -136,118 +137,106 @@ interface AuthProviderProps {
  * Authentication provider component.
  * Wraps the application to provide authentication state and methods.
  */
+// LocalStorage key for persisting auth state
+const AUTH_STORAGE_KEY = 'skinaurapro_auth_state';
+
+/**
+ * Save auth state to localStorage
+ */
+const saveAuthToStorage = (userData: User | null, profileData: UserProfile | null) => {
+  if (typeof window === 'undefined') return;
+  
+  if (userData && profileData) {
+    const authState = {
+      user: userData,
+      profile: profileData,
+      timestamp: Date.now(),
+    };
+    localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(authState));
+    console.log('[AuthContext] Saved auth state to localStorage');
+  } else {
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    console.log('[AuthContext] Cleared auth state from localStorage');
+  }
+};
+
+/**
+ * Load auth state from localStorage
+ */
+const loadAuthFromStorage = (): { user: User; profile: UserProfile } | null => {
+  if (typeof window === 'undefined') return null;
+  
+  try {
+    const stored = localStorage.getItem(AUTH_STORAGE_KEY);
+    if (!stored) return null;
+    
+    const authState = JSON.parse(stored);
+    
+    // Check if stored data is valid (has user and profile)
+    if (authState.user && authState.profile) {
+      console.log('[AuthContext] Loaded auth state from localStorage');
+      return {
+        user: authState.user,
+        profile: authState.profile,
+      };
+    }
+    return null;
+  } catch (error) {
+    console.error('[AuthContext] Error loading auth from localStorage:', error);
+    localStorage.removeItem(AUTH_STORAGE_KEY);
+    return null;
+  }
+};
+
+/**
+ * Clear auth state from localStorage
+ */
+const clearAuthStorage = () => {
+  if (typeof window === 'undefined') return;
+  localStorage.removeItem(AUTH_STORAGE_KEY);
+  console.log('[AuthContext] Cleared auth state from localStorage');
+};
+
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   // ========================================================================
-  // STATE
+  // STATE - Initialize from localStorage for instant restore on refresh
   // ========================================================================
   
-  const [user, setUser] = useState<User | null>(null);
-  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const storedAuth = loadAuthFromStorage();
+  
+  const [user, setUser] = useState<User | null>(storedAuth?.user || null);
+  const [profile, setProfile] = useState<UserProfile | null>(storedAuth?.profile || null);
   const [session, setSession] = useState<Session | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [isSessionValid, setIsSessionValid] = useState(false);
+  const [loading, setLoading] = useState(!storedAuth); // Not loading if we have stored auth
+  const [isSessionValid, setIsSessionValid] = useState(!!storedAuth);
 
   // ========================================================================
   // SESSION INITIALIZATION & AUTH STATE LISTENER
   // ========================================================================
 
   useEffect(() => {
-    /**
-     * Initialize session on mount using supabase.auth.getSession() and getUser()
-     * This handles page refresh scenarios
-     */
-    const initializeSession = async () => {
-      try {
-        console.log('[AuthContext] Initializing session...');
-        
-        // Step 1: Get current session using supabase.auth.getSession()
-        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-        
-        if (sessionError) {
-          console.error('[AuthContext] Error getting session:', sessionError);
-          setLoading(false);
-          setIsSessionValid(false);
-          return;
-        }
+    // If we already loaded from localStorage, just finish loading
+    if (storedAuth) {
+      console.log('[AuthContext] Session restored from localStorage', {
+        userId: storedAuth.user.id,
+        role: storedAuth.profile.role
+      });
+      setLoading(false);
+    }
 
-        // If no session exists, user is not logged in
-        if (!sessionData.session) {
-          console.log('[AuthContext] No active session found');
-          setUser(null);
-          setProfile(null);
-          setSession(null);
-          setIsSessionValid(false);
-          setLoading(false);
-          return;
-        }
-
-        console.log('[AuthContext] Session found, validating...');
-
-        // Step 2: Validate session by getting user with supabase.auth.getUser()
-        // This makes a request to the Supabase Auth server to validate the JWT
-        const { data: userData, error: userError } = await supabase.auth.getUser();
-
-        if (userError || !userData.user) {
-          console.error('[AuthContext] Session invalid or user not found:', userError);
-          // Session is invalid, clear everything
-          await clearSessionAndRedirect();
-          return;
-        }
-
-        console.log('[AuthContext] User validated:', userData.user.id);
-
-        // Step 3: Fetch user profile from user_profiles table
-        const { data: profileData, error: profileError } = await supabase
-          .from('user_profiles')
-          .select('*')
-          .eq('id', userData.user.id)
-          .maybeSingle();
-
-        if (profileError) {
-          console.error('[AuthContext] Error fetching profile:', profileError);
-          // User exists but profile fetch failed - still set user and session
-          setUser(userData.user);
-          setSession(sessionData.session);
-          setProfile(null);
-          setIsSessionValid(true);
-          setLoading(false);
-          return;
-        }
-
-        // Step 4: Set all state
-        setUser(userData.user);
-        setSession(sessionData.session);
-        setProfile(profileData as UserProfile | null);
-        setIsSessionValid(true);
-        
-        console.log('[AuthContext] Session initialized successfully', {
-          userId: userData.user.id,
-          role: profileData?.role
-        });
-
-      } catch (error) {
-        console.error('[AuthContext] Unexpected error during session initialization:', error);
-        setIsSessionValid(false);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    // Initialize session on mount
-    initializeSession();
-
-    // Set up auth state change listener
+    // Set up auth state change listener - this handles all auth events
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, currentSession) => {
         console.log('[AuthContext] Auth state changed:', event);
 
         if (event === 'SIGNED_IN' && currentSession) {
           // User signed in - update state
+          console.log('[AuthContext] User signed in');
           setSession(currentSession);
           setUser(currentSession.user);
           setIsSessionValid(true);
 
-          // Fetch profile
+          // Fetch profile and save to localStorage
           const { data: profileData } = await supabase
             .from('user_profiles')
             .select('*')
@@ -256,13 +245,18 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
           if (profileData) {
             setProfile(profileData as UserProfile);
+            // Save to localStorage
+            saveAuthToStorage(currentSession.user, profileData as UserProfile);
           }
+          setLoading(false);
         } else if (event === 'SIGNED_OUT') {
-          // User signed out - clear state
+          // User signed out - clear state and localStorage
           setUser(null);
           setProfile(null);
           setSession(null);
           setIsSessionValid(false);
+          clearAuthStorage();
+          setLoading(false);
         } else if (event === 'TOKEN_REFRESHED' && currentSession) {
           // Token was refreshed - update session
           setSession(currentSession);
@@ -270,6 +264,32 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         } else if (event === 'USER_UPDATED' && currentSession) {
           // User was updated - refresh user data
           setUser(currentSession.user);
+        } else if (event === 'INITIAL_SESSION') {
+          // Initial session check on page load
+          if (!currentSession && !storedAuth) {
+            // No session and no stored auth - user is not logged in
+            setLoading(false);
+          } else if (currentSession) {
+            // Session exists from Supabase
+            setSession(currentSession);
+            setUser(currentSession.user);
+            setIsSessionValid(true);
+            
+            // Fetch profile if not already loaded from storage
+            if (!storedAuth) {
+              const { data: profileData } = await supabase
+                .from('user_profiles')
+                .select('*')
+                .eq('id', currentSession.user.id)
+                .maybeSingle();
+
+              if (profileData) {
+                setProfile(profileData as UserProfile);
+                saveAuthToStorage(currentSession.user, profileData as UserProfile);
+              }
+            }
+            setLoading(false);
+          }
         }
       }
     );
@@ -527,7 +547,10 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setProfile(profileData as UserProfile);
       setIsSessionValid(true);
 
-      // Step 7: Return success with user and profile
+      // Step 7: Save to localStorage for instant restore on refresh
+      saveAuthToStorage(authData.user, profileData as UserProfile);
+
+      // Step 8: Return success with user and profile
       return {
         error: null,
         user: authData.user,
@@ -560,6 +583,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setProfile(null);
       setSession(null);
       setIsSessionValid(false);
+      
+      // Clear localStorage
+      clearAuthStorage();
 
       return { error: null };
     } catch (error) {
@@ -585,6 +611,9 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setSession(null);
       setIsSessionValid(false);
       setLoading(false);
+      
+      // Clear localStorage
+      clearAuthStorage();
 
       // Redirect to home page
       if (typeof window !== 'undefined' && window.location.pathname !== '/') {
@@ -598,6 +627,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setSession(null);
       setIsSessionValid(false);
       setLoading(false);
+      clearAuthStorage();
     }
   };
 
@@ -648,6 +678,23 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     } catch (error) {
       console.error('[AuthContext] Unexpected error refreshing session:', error);
       return { success: false, error: 'Unexpected error' };
+    }
+  };
+
+  /**
+   * Sends a password reset email to the specified email address.
+   * @param email - The email address to send the reset link to
+   */
+  const resetPassword = async (email: string): Promise<{ error: AuthError | Error | null }> => {
+    try {
+      const sanitizedEmail = sanitizeInput(email.toLowerCase().trim());
+      const { error } = await supabase.auth.resetPasswordForEmail(sanitizedEmail, {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
+      
+      return { error };
+    } catch (error) {
+      return { error: error as Error };
     }
   };
 
@@ -715,6 +762,8 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
         
         if (updatedProfile) {
           setProfile(updatedProfile as UserProfile);
+          // Save updated profile to localStorage
+          saveAuthToStorage(user, updatedProfile as UserProfile);
         }
       }
 
@@ -741,6 +790,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     signUp,
     signIn,
     signOut,
+    resetPassword,
     updatePassword,
     updateProfile,
     refreshSession,
