@@ -49,9 +49,32 @@ const App = () => (
           <BrowserRouter>
             <Suspense fallback={<PageLoader />}>
               <Routes>
+                {/* Landing page */}
                 <Route path="/" element={<Index />} />
+                
+                {/* Client routes */}
                 <Route path="/client" element={<Index />} />
+                <Route path="/client/dashboard" element={<Index />} />
+                <Route path="/client/routine" element={<Index />} />
+                <Route path="/client/products" element={<Index />} />
+                <Route path="/client/progress" element={<Index />} />
+                <Route path="/client/treatment-plans" element={<Index />} />
+                <Route path="/client/achievements" element={<Index />} />
+                <Route path="/client/leaderboard" element={<Index />} />
+                <Route path="/client/faq" element={<Index />} />
+                
+                {/* Professional routes */}
                 <Route path="/professional" element={<Index />} />
+                <Route path="/professional/dashboard" element={<Index />} />
+                <Route path="/professional/clients" element={<Index />} />
+                <Route path="/professional/photos" element={<Index />} />
+                <Route path="/professional/routines" element={<Index />} />
+                <Route path="/professional/treatment-plans" element={<Index />} />
+                <Route path="/professional/analytics" element={<Index />} />
+                <Route path="/professional/products" element={<Index />} />
+                <Route path="/professional/faq" element={<Index />} />
+                
+                {/* Other routes */}
                 <Route path="/profile" element={<ClientProfile />} />
                 <Route path="/reset-password" element={<ResetPassword />} />
                 <Route path="/api-docs" element={<ApiDocs />} />
@@ -67,4 +90,3 @@ const App = () => (
 );
 
 export default App;
-
